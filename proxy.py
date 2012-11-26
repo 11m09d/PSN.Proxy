@@ -1,17 +1,31 @@
 import sys
+import os
 import urlparse
 import re
+import subprocess
+import time
+
 from twisted.web.http import HTTPClient, HTTPFactory
 from twisted.web.proxy import ProxyRequest, Proxy 
 from twisted.web import static,server,resource
 from twisted.protocols.basic import FileSender
+from twisted.internet import reactor,threads
 from twisted.internet.protocol import ClientFactory, Protocol
-from twisted.internet import reactor
+from twisted.internet.task import deferLater
+from twisted.application.internet import TimerService
+
+from lixian_api import LiXianAPI
+
 #from twisted.python import log
 
 #log.startLogging(sys.stdout)
 __version__ = '0.0.1'
 VERSION = 'PSN Proxy/'+__version__
+PROXY_HOST = "192.168.1.200"
+PROXY_PORT = 8080
+XUNLEI_USERNAME = ''
+XUNLEI_PASSWORD = ''
+xunlei = LiXianAPI()
 
 class LocalFile(static.File):
 
@@ -25,21 +39,48 @@ class LocalFile(static.File):
             e = len(url)
         return url[i:e]
 
-    def render_GET(self, request):
-        request.setHeader('Content-Type', 'text/plain')
+    def transfer(self, request):
+        print 'begin transfer\n'
         fp = open('./cache/' + self.getFileName(request.uri), 'rb')
         d = FileSender().beginFileTransfer(fp, request)
         def cbFinished(ignored):
             fp.close()
             request.finish()
+            print 'end transfer\n'
         d.addBoth(cbFinished)
+
+    def download(self, request):
+        xunlei.add_task(request.uri)
+        url = xunlei.get_task_list(10,2)[0]['lixian_url']
+        print url
+        ret = subprocess.call('aria2c -s10 -x5 -k 10M --header "Cookie:gdriveid=' + xunlei.gdriveid + ';" -d ./cache/ "' + url + '"',shell=True)
+        if ret == 0:
+            print 'download completed!\n'
+        else:
+            print 'download failed!\n'
+
+    def render_GET(self, request):
+        request.setHeader('Content-Type', 'text/plain')
+        t = 0
+        if os.path.exists('./cache/' + self.getFileName(request.uri)):
+            self.transfer(request)
+        else:
+            d = threads.deferToThread(self.download, request)
+            #d = deferLater(reactor, t, self.download, request)
+            d.addCallback(self.transfer, request)
         return server.NOT_DONE_YET
 
 class TunnelProxyRequest (ProxyRequest): 
     res = LocalFile('./cache')
     
     def isReplace(self):
-        return True
+        p = re.compile('http://\S+playstation.net/\S+/\S+[.]pkg.*')
+        if p.match(self.uri):
+            return True
+        p = re.compile('http://\S+playstation.net/\S+/\S+UPDAT[.]PUP.*')
+        if p.match(self.uri):
+            return True
+        return False
 
     """ 
     A request processor which supports the TUNNEL method. 
@@ -48,7 +89,7 @@ class TunnelProxyRequest (ProxyRequest):
         print self.uri
         if self.isReplace():
             self.res.render_GET(self);
-            self.transport.loseConnection()
+            #self.transport.loseConnection()
         else:
             if self.method.upper() == 'CONNECT': 
                 self._process_connect() 
@@ -194,7 +235,24 @@ class TunnelProtocolFactory (ClientFactory):
         self._request.setResponseCode(501, 'Gateway error') 
         self._request.finish() 
 
+def info():
+    xvi = xunlei.get_vip_info()
+    info = ''
+    info += '------------------------------------------------------\n'
+    info += 'PSN.Proxy Version    : %s\n' % (__version__)
+    info += 'Listen Address       : %s:%d\n' % (PROXY_HOST,PROXY_PORT)
+    info += 'Xunlei               : %s\n' % (XUNLEI_USERNAME)
+    info += 'Xunlei Expired Date  : %s\n' % (xvi.get("expiredate", "unknow"))
+    info += 'Xunlei Level         : %s\n' % (xvi.get("level", "0"))
+    info += '------------------------------------------------------\n'
+    return info
+
 if __name__ == '__main__':
     reactor.listenTCP(8080, TunnelProxyFactory()) 
+    if not xunlei.login(XUNLEI_USERNAME, XUNLEI_PASSWORD):
+        print >> stderr, username, "login error" 
+        sys.exit(3)
+    else:
+        print info()
     reactor.run()
 
