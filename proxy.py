@@ -35,6 +35,7 @@ class LocalFile(static.File):
     def __init__(self,filepath):
         static.File.__init__(self, filepath)
         self.filepath = filepath
+        self.contentTypes['.pkg'] = 'application/octet-stream'
 
     def transfer_failed(self,request):
         request.setResponseCode(404)
@@ -45,27 +46,6 @@ class LocalFile(static.File):
         request.setHeader('Content-Type', 'text/plain')
         request.setHeader('accept-ranges', 'bytes')
         request.setHeader('content-length', self.getsize())
-
-        self.restat(False)
-        if self.type is None:
-            self.type, self.encoding = static.getTypeAndEncoding(self.basename(),
-                                                          self.contentTypes,
-                                                          self.contentEncodings,
-                                                          self.defaultType)
-        if not self.exists():
-            transfer_failed
-            return
-        request.setHeader('accept-ranges', 'bytes')
-
-        try:
-            fileForReading = self.openForReading()
-        except IOError:
-            transfer_failed
-            return
-
-        producer = self.makeProducer(request, fileForReading)
-
-        producer.start()
 
         #fp = open(self.filepath, 'rb')
         #d = FileSender().beginFileTransfer(fp, request)
@@ -98,11 +78,12 @@ class LocalFile(static.File):
             subprocess.call(cmd,shell=True)
             common.downloadlist.remove(request.uri)
             if ret == 0:
-                print 'download completed!'
+                #print 'download completed!'
                 self.transfer(request)
                 return
             else:
-                print 'download failed!'
+                #print 'download failed!'
+                pass
         request.setResponseCode(404)
         request.finish()
 
@@ -289,6 +270,7 @@ class TunnelProtocolFactory (ClientFactory):
     def clientConnectionFailed(self, connector, reason): 
         self._request.setResponseCode(501, 'Gateway error') 
         self._request.finish() 
+
 class Common:
     
     def __init__(self,username = None,password = None):
