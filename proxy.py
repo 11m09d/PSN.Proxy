@@ -1,18 +1,16 @@
 import sys
 import os
-import urlparse
 import re
 import subprocess
-import time
+import ConfigParser
 
-from twisted.web.http import HTTPClient, HTTPFactory
+from twisted.web import server,http,static
+from twisted.web.http import HTTPFactory
 from twisted.web.proxy import ProxyRequest, Proxy 
-from twisted.web import static,server,resource
 from twisted.protocols.basic import FileSender
 from twisted.internet import reactor,threads
 from twisted.internet.protocol import ClientFactory, Protocol
 from twisted.internet.task import deferLater
-from twisted.application.internet import TimerService
 
 from lixian_api import LiXianAPI
 
@@ -20,76 +18,133 @@ from lixian_api import LiXianAPI
 
 #log.startLogging(sys.stdout)
 __version__ = '0.0.1'
-VERSION = 'PSN Proxy/'+__version__
-PROXY_HOST = "192.168.1.200"
-PROXY_PORT = 8080
-XUNLEI_USERNAME = ''
-XUNLEI_PASSWORD = ''
-xunlei = LiXianAPI()
+__config__ = 'proxy.ini'
+
+def getFileName(url):
+    i = url.rfind('/')
+    if i == -1:
+        return ''
+    i += 1
+    e = url.rfind('?',i)
+    if e == -1:
+        e = len(url)
+    return url[i:e]
 
 class LocalFile(static.File):
 
-    def getFileName(self,url):
-        i = url.rfind('/')
-        if i == -1:
-            return ''
-        i += 1
-        e = url.rfind('?',i)
-        if e == -1:
-            e = len(url)
-        return url[i:e]
+    def __init__(self,filepath):
+        static.File.__init__(self, filepath)
+        self.filepath = filepath
+
+    def transfer_failed(self,request):
+        request.setResponseCode(404)
+        request.finish()
 
     def transfer(self, request):
-        print 'begin transfer\n'
-        fp = open('./cache/' + self.getFileName(request.uri), 'rb')
-        d = FileSender().beginFileTransfer(fp, request)
-        def cbFinished(ignored):
-            fp.close()
-            request.finish()
-            print 'end transfer\n'
-        d.addBoth(cbFinished)
+        '''
+        request.setHeader('Content-Type', 'text/plain')
+        request.setHeader('accept-ranges', 'bytes')
+        request.setHeader('content-length', self.getsize())
+
+        self.restat(False)
+        if self.type is None:
+            self.type, self.encoding = static.getTypeAndEncoding(self.basename(),
+                                                          self.contentTypes,
+                                                          self.contentEncodings,
+                                                          self.defaultType)
+        if not self.exists():
+            transfer_failed
+            return
+        request.setHeader('accept-ranges', 'bytes')
+
+        try:
+            fileForReading = self.openForReading()
+        except IOError:
+            transfer_failed
+            return
+
+        producer = self.makeProducer(request, fileForReading)
+
+        producer.start()
+
+        #fp = open(self.filepath, 'rb')
+        #d = FileSender().beginFileTransfer(fp, request)
+        #def cbFinished(ignored):
+        #    fp.close()
+        #    request.finish()
+        #d.addBoth(cbFinished)
+        '''
+        self.render_GET(request)
+
+    def get_xunlei_url(self,request):
+        common.xunlei.add_task(request.uri)
+        tasks = common.xunlei.get_task_list(10,0)
+        for task in tasks:
+            #print task['url']
+            if task['url'] == request.uri:
+                if task['status'] != "finished":
+                    #TODO
+                    break
+                return task['lixian_url']
+        return request.uri
 
     def download(self, request):
-        xunlei.add_task(request.uri)
-        url = xunlei.get_task_list(10,2)[0]['lixian_url']
-        print url
-        ret = subprocess.call('aria2c -s10 -x5 -k 10M --header "Cookie:gdriveid=' + xunlei.gdriveid + ';" -d ./cache/ "' + url + '"',shell=True)
-        if ret == 0:
-            print 'download completed!\n'
-        else:
-            print 'download failed!\n'
+        if not request.uri in common.downloadlist:
+            ret = 0
+            cmd = 'aria2c -c -s10 -x5 -k 10M -d %s -o %s "%s"' % (common.destdir, getFileName(request.uri), request.uri)
+            if common.XUNLEI_ENABLE:
+                cmd = 'aria2c -c -s10 -x5 -k 10M --header "Cookie:gdriveid=%s;" -d %s -o "%s" "%s"' % (common.xunlei.gdriveid, common.destdir, getFileName(request.uri), self.get_xunlei_url(request))
+            common.downloadlist.append(request.uri)
+            subprocess.call(cmd,shell=True)
+            common.downloadlist.remove(request.uri)
+            if ret == 0:
+                print 'download completed!'
+                self.transfer(request)
+                return
+            else:
+                print 'download failed!'
+        request.setResponseCode(404)
+        request.finish()
 
-    def render_GET(self, request):
-        request.setHeader('Content-Type', 'text/plain')
-        t = 0
-        if os.path.exists('./cache/' + self.getFileName(request.uri)):
+    def pre_render(self, request):
+        if os.path.exists(self.filepath) and not os.path.exists(self.filepath + '.aria2'):
             self.transfer(request)
         else:
-            d = threads.deferToThread(self.download, request)
-            #d = deferLater(reactor, t, self.download, request)
-            d.addCallback(self.transfer, request)
+            threads.deferToThread(self.download, request)
         return server.NOT_DONE_YET
 
 class TunnelProxyRequest (ProxyRequest): 
-    res = LocalFile('./cache')
     
     def isReplace(self):
-        p = re.compile('http://\S+playstation.net/\S+/\S+[.]pkg.*')
-        if p.match(self.uri):
-            return True
-        p = re.compile('http://\S+playstation.net/\S+/\S+UPDAT[.]PUP.*')
-        if p.match(self.uri):
-            return True
+        for ul in common.urls:
+            if self.uri == ul:
+                return True
+        for fi in common.filters:
+            p = re.compile(fi[1])
+            if p.match(self.uri):
+                return True
         return False
+
+    #Sometimes i get uri like this http://psp2-e.np.dl.playstation.nethttp://psp2-e.np.dl.playstation.net/
+    #this is a temporary function
+    def fixVitaURL(self):
+        p = re.compile('^http://\S*[.]playstation[.]nethttp://\S*[.]playstation[.]net/S*')
+        if p.match(self.uri):
+            self.uri = self.uri[self.uri.find('http://',7):]
+            print 'Psn.proxy Warning: Host psp2-e.np.dl.playstation.nethttp misformated, psn.proxy fixed it'
 
     """ 
     A request processor which supports the TUNNEL method. 
     """ 
     def process(self): 
-        print self.uri
+        #fix for vita
+        self.fixVitaURL()
+        print self
         if self.isReplace():
-            self.res.render_GET(self);
-            #self.transport.loseConnection()
+            filepath = os.path.join(common.destdir, getFileName(self.uri))
+            lf = LocalFile(filepath)
+            print 'Psn.proxy : download/using local file ',filepath
+            lf.pre_render(self);
         else:
             if self.method.upper() == 'CONNECT': 
                 self._process_connect() 
@@ -234,25 +289,73 @@ class TunnelProtocolFactory (ClientFactory):
     def clientConnectionFailed(self, connector, reason): 
         self._request.setResponseCode(501, 'Gateway error') 
         self._request.finish() 
+class Common:
+    
+    def __init__(self,username = None,password = None):
+        ConfigParser.RawConfigParser.OPTCRE = re.compile(r'(?P<option>[^=\s][^=]*)\s*(?P<vi>[=])\s*(?P<value>.*)$')
+        self.CONFIG = ConfigParser.ConfigParser()
+        self.CONFIG.read(os.path.join(os.path.dirname(__file__), __config__))
 
-def info():
-    xvi = xunlei.get_vip_info()
-    info = ''
-    info += '------------------------------------------------------\n'
-    info += 'PSN.Proxy Version    : %s\n' % (__version__)
-    info += 'Listen Address       : %s:%d\n' % (PROXY_HOST,PROXY_PORT)
-    info += 'Xunlei               : %s\n' % (XUNLEI_USERNAME)
-    info += 'Xunlei Expired Date  : %s\n' % (xvi.get("expiredate", "unknow"))
-    info += 'Xunlei Level         : %s\n' % (xvi.get("level", "0"))
-    info += '------------------------------------------------------\n'
-    return info
+        self.LISTEN_IP = self.CONFIG.get('listen', 'ip')
+        self.LISTEN_PORT = self.CONFIG.getint('listen', 'port')
+
+        self.XUNLEI_ENABLE = self.CONFIG.getboolean('xunlei', 'enable')
+        if self.XUNLEI_ENABLE:
+            if username != None:
+                self.USERNAME = username
+            else:
+                self.USERNAME = self.CONFIG.get('xunlei', 'username')
+            if password != None:
+                self.PASSWORD = password
+            else:
+                self.PASSWORD = self.CONFIG.get('xunlei', 'password')
+
+        self.urls = self.CONFIG.items('url')
+        self.filters = self.CONFIG.items('filter')
+
+        self.destdir = os.path.join(os.path.dirname(__file__), 'cache')
+
+        self.downloadlist = []        
+        
+        self.xunlei = LiXianAPI()
+        
+        if self.XUNLEI_ENABLE:
+            if not self.xunlei.login(self.USERNAME, self.PASSWORD):
+                print >> stderr, username, "login error" 
+                sys.exit(-1)
+        print self.info()
+        
+    def info(self):
+        xvi = self.xunlei.get_vip_info()
+        info = ''
+        info += '------------------------------------------------------\n'
+        info += 'PSN.Proxy Version    : %s\n' % (__version__)
+        info += 'Listen Address       : %s:%d\n' % (self.LISTEN_IP, self.LISTEN_PORT)
+        if self.XUNLEI_ENABLE:
+            info += 'Xunlei User          : %s\n' % (self.USERNAME)
+            info += 'Xunlei Expired Date  : %s\n' % (xvi.get("expiredate", "unknow"))
+            info += 'Xunlei Level         : %s\n' % (xvi.get("level", "0"))
+        info += '------------------------------------------------------\n'
+        return info
+        
+
+common = None
 
 if __name__ == '__main__':
-    reactor.listenTCP(8080, TunnelProxyFactory()) 
-    if not xunlei.login(XUNLEI_USERNAME, XUNLEI_PASSWORD):
-        print >> stderr, username, "login error" 
-        sys.exit(3)
+    if len(sys.argv) == 2 and sys.argv[1] == '-h':
+        print 'Usage:python proxy.py <username> <password>'
+        sys.exit(0)
+
+    global __file__
+    if os.path.islink(__file__):
+        __file__ = getattr(os, 'readlink', lambda x:x)(__file__)
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
+    if len(sys.argv) == 3:
+        common = Common(sys.argv[1],sys.argv[2])
     else:
-        print info()
+        common = Common()
+        
+    reactor.listenTCP(common.LISTEN_PORT, TunnelProxyFactory()) 
     reactor.run()
 
