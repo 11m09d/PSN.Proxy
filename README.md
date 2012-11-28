@@ -14,16 +14,16 @@ python proxy.py xunlei.username xunlei.password
   
 Feature  
 =========
-1、对符合条件的URL，使用迅雷离线下载完成后再传给ps设备
+1、对符合条件的URL，使用迅雷离线下载完成后再传给ps设备  
 2、可以通过proxy.ini配置端口设置、迅雷账号、以及自动下载的过滤条件  
   
-TODO List：
+TODO List
 =========
 1、在psn store出现未知错误  
 2、离线迅雷未能立即下载完成的情况下的处理  
-3、缓存文件在目录可配置  
+3、缓存文件目录可配置  
   
+License  
 =========
-License
 psn.proxy is licensed under GNU Lesser General Public License. You may get a copy of the GNU Lesser General Public License from <http://www.gnu.org/licenses/lgpl.txt>
 
