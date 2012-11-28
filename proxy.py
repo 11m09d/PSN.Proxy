@@ -54,7 +54,7 @@ class LocalFile(static.File):
         #    request.finish()
         #d.addBoth(cbFinished)
         '''
-        self.render_GET(request)
+        self.render(request)
 
     def get_xunlei_url(self,request):
         common.xunlei.add_task(request.uri)
@@ -75,6 +75,7 @@ class LocalFile(static.File):
             if common.XUNLEI_ENABLE:
                 cmd = 'aria2c -c -s10 -x5 -k 10M --header "Cookie:gdriveid=%s;" -d %s -o "%s" "%s"' % (common.xunlei.gdriveid, common.destdir, getFileName(request.uri), self.get_xunlei_url(request))
             common.downloadlist.append(request.uri)
+            print '[debug]',cmd
             subprocess.call(cmd,shell=True)
             common.downloadlist.remove(request.uri)
             if ret == 0:
@@ -97,13 +98,14 @@ class LocalFile(static.File):
 class TunnelProxyRequest (ProxyRequest): 
     
     def isReplace(self):
-        for ul in common.urls:
-            if self.uri == ul:
-                return True
-        for fi in common.filters:
-            p = re.compile(fi[1])
-            if p.match(self.uri):
-                return True
+        if self.method.upper() == "GET":
+            for ul in common.urls:
+                if self.uri == ul:
+                    return True
+            for fi in common.filters:
+                p = re.compile(fi[1])
+                if p.match(self.uri):
+                    return True
         return False
 
     #Sometimes i get uri like this http://psp2-e.np.dl.playstation.nethttp://psp2-e.np.dl.playstation.net/
