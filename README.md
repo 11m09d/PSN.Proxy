@@ -2,13 +2,13 @@ psn.proxy
 =========
 psn.proxy 是利用迅雷离线加速PSN下载的工具  
 
-离线迅雷部分代码基于binux的lixian.xunlei项目<https://github.com/binux/lixian.xunlei>  
+离线迅雷部分代码基于binux的项目[lixian.xunlei](https://github.com/binux/lixian.xunlei)  
 
 下载将调用aria2c，请保证aria2c在命令行下可用
 
-下载  
+Download  
 =========
-0.1版本下载：<https://github.com/downloads/psyche08/psn.proxy/PSN.Proxy.zip>  
+[0.1版本下载](https://github.com/downloads/psyche08/psn.proxy/PSN.Proxy.zip)  
 
 Usage  
 =========
@@ -16,6 +16,8 @@ Usage
 python proxy.py  
 or  
 python proxy.py xunlei.username xunlei.password
+  
+如果不想在配置文件proxy.ini中留下帐号信息，可启动程序后输入帐号密码  
   
 Feature  
 =========
@@ -31,5 +33,6 @@ TODO List
   
 License  
 =========
-psn.proxy is licensed under GNU Lesser General Public License. You may get a copy of the GNU Lesser General Public License from <http://www.gnu.org/licenses/lgpl.txt>
+psn.proxy is licensed under GNU Lesser General Public License.  
+You may get a copy of the GNU Lesser General Public License from <http://www.gnu.org/licenses/lgpl.txt>
 
