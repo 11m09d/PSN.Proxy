@@ -1,8 +1,14 @@
+#/bin/usr/env python
+#encoding: utf8
+#author: psyche08<psyche08@gmail.com>
+
 import sys
 import os
 import re
 import subprocess
 import ConfigParser
+import getpass
+import socket
 
 from twisted.web import server,http,static
 from twisted.web.http import HTTPFactory
@@ -17,7 +23,7 @@ from lixian_api import LiXianAPI
 #from twisted.python import log
 
 #log.startLogging(sys.stdout)
-__version__ = '0.0.1'
+__version__ = '0.1.0'
 __config__ = 'proxy.ini'
 
 def getFileName(url):
@@ -302,19 +308,27 @@ class Common:
         self.downloadlist = []        
         
         self.xunlei = LiXianAPI()
-        
+
         if self.XUNLEI_ENABLE:
-            if not self.xunlei.login(self.USERNAME, self.PASSWORD):
-                print >> stderr, username, "login error" 
-                sys.exit(-1)
-        print self.info()
+            if self.USERNAME == '' or self.PASSWORD == '':
+                self.USERNAME = raw_input('Username: ')
+                self.PASSWORD = getpass.getpass('Password: ')
+            try:
+                if self.xunlei.login(self.USERNAME, self.PASSWORD):
+                    print self.info()
+                    return
+            except:
+                pass
+            print self.USERNAME, "login error"
+            key = raw_input("Press enter key to exit...")
+            sys.exit(-1)
         
     def info(self):
         xvi = self.xunlei.get_vip_info()
         info = ''
         info += '------------------------------------------------------\n'
         info += 'PSN.Proxy Version    : %s\n' % (__version__)
-        info += 'Listen Address       : %s:%d\n' % (self.LISTEN_IP, self.LISTEN_PORT)
+        info += 'Listen Address       : %s:%d\n' % (socket.gethostbyname(socket.gethostname()), self.LISTEN_PORT)
         if self.XUNLEI_ENABLE:
             info += 'Xunlei User          : %s\n' % (self.USERNAME)
             info += 'Xunlei Expired Date  : %s\n' % (xvi.get("expiredate", "unknow"))
