@@ -20,9 +20,6 @@ from twisted.internet.task import deferLater
 
 from lixian_api import LiXianAPI
 
-#from twisted.python import log
-
-#log.startLogging(sys.stdout)
 __version__ = '0.1.0'
 __config__ = 'proxy.ini'
 
@@ -48,18 +45,6 @@ class LocalFile(static.File):
         request.finish()
 
     def transfer(self, request):
-        '''
-        request.setHeader('Content-Type', 'text/plain')
-        request.setHeader('accept-ranges', 'bytes')
-        request.setHeader('content-length', self.getsize())
-
-        #fp = open(self.filepath, 'rb')
-        #d = FileSender().beginFileTransfer(fp, request)
-        #def cbFinished(ignored):
-        #    fp.close()
-        #    request.finish()
-        #d.addBoth(cbFinished)
-        '''
         self.render(request)
 
     def get_xunlei_url(self,request):
@@ -101,17 +86,19 @@ class LocalFile(static.File):
             threads.deferToThread(self.download, request)
         return server.NOT_DONE_YET
 
-class TunnelProxyRequest (ProxyRequest): 
-    
+class TunnelProxyRequest (ProxyRequest):
+
     def isReplace(self):
-        if self.method.upper() == "GET":
-            for ul in common.urls:
-                if self.uri == ul:
-                    return True
-            for fi in common.filters:
-                p = re.compile(fi[1])
-                if p.match(self.uri):
-                    return True
+        for il in common.ignorelist:
+            if self.uri == il:
+                return False        
+        for ul in common.urls:
+            if self.uri == ul:
+                return True
+        for fi in common.filters:
+            p = re.compile(fi[1])
+            if p.match(self.uri):
+                return True
         return False
 
     #Sometimes i get uri like this http://psp2-e.np.dl.playstation.nethttp://psp2-e.np.dl.playstation.net/
@@ -122,6 +109,19 @@ class TunnelProxyRequest (ProxyRequest):
             self.uri = self.uri[self.uri.find('http://',7):]
             print 'Psn.proxy Warning: Host psp2-e.np.dl.playstation.nethttp misformated, psn.proxy fixed it'
 
+    def write(self, data):
+        if self.method.upper() == 'HEAD':
+            print 'debug TunnelProxyRequest.write',self.responseHeaders
+        ProxyRequest.write(self,data)
+        if self.method.upper() == 'HEAD' and self.isReplace() and self.responseHeaders.hasHeader('content-length'):
+            print self.responseHeaders.getRawHeaders('content-length')
+            pkgsize = int(self.responseHeaders.getRawHeaders('content-length')[-1])
+            if pkgsize < common.minsize:
+                if not self.uri in common.ignorelist:
+                    common.ignorelist.append(self.uri)
+                    print 'Psn.proxy : this pkg is too small, ignore'
+
+
     """ 
     A request processor which supports the TUNNEL method. 
     """ 
@@ -129,7 +129,7 @@ class TunnelProxyRequest (ProxyRequest):
         #fix for vita
         self.fixVitaURL()
         print self
-        if self.isReplace():
+        if self.isReplace() and self.method.upper() == "GET":
             filepath = os.path.join(common.destdir, getFileName(self.uri))
             lf = LocalFile(filepath)
             print 'Psn.proxy : download/using local file ',filepath
@@ -138,7 +138,8 @@ class TunnelProxyRequest (ProxyRequest):
             if self.method.upper() == 'CONNECT': 
                 self._process_connect() 
             else: 
-                return ProxyRequest.process(self) 
+                ProxyRequest.process(self) 
+                #if the pkg is too smaller,there is no need to boost
  
     def _process_connect(self): 
         try: 
@@ -305,7 +306,10 @@ class Common:
 
         self.destdir = os.path.join(os.path.dirname(__file__), 'cache')
 
+        self.minsize = 1024 * 1024
+
         self.downloadlist = []        
+        self.ignorelist = []        
         
         self.xunlei = LiXianAPI()
 
@@ -314,14 +318,14 @@ class Common:
                 self.USERNAME = raw_input('Username: ')
                 self.PASSWORD = getpass.getpass('Password: ')
             try:
-                if self.xunlei.login(self.USERNAME, self.PASSWORD):
-                    print self.info()
-                    return
+                if not self.xunlei.login(self.USERNAME, self.PASSWORD):
+                    print self.USERNAME, "login error"
+                    key = raw_input("Press enter key to exit...")
+                    sys.exit(-1)
             except:
                 pass
-            print self.USERNAME, "login error"
-            key = raw_input("Press enter key to exit...")
-            sys.exit(-1)
+        
+        print self.info()
         
     def info(self):
         xvi = self.xunlei.get_vip_info()
