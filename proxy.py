@@ -12,15 +12,16 @@ import socket
 
 from twisted.web import server,http,static
 from twisted.web.http import HTTPFactory
-from twisted.web.proxy import ProxyRequest, Proxy 
+from twisted.web.proxy import ProxyClient,ProxyRequest,Proxy 
 from twisted.protocols.basic import FileSender
-from twisted.internet import reactor,threads
-from twisted.internet.protocol import ClientFactory, Protocol
+from twisted.internet import reactor,threads,defer
+from twisted.internet.protocol import ClientFactory,Protocol
 from twisted.internet.task import deferLater
+from twisted.web.client import Agent
 
 from lixian_api import LiXianAPI
 
-__version__ = '0.1.0'
+__version__ = '0.1.1'
 __config__ = 'proxy.ini'
 
 def getFileName(url):
@@ -40,12 +41,24 @@ class LocalFile(static.File):
         self.filepath = filepath
         self.contentTypes['.pkg'] = 'application/octet-stream'
 
-    def transfer_failed(self,request):
+    def transfer_failed(self, result, request):
+        #print '[debug]LocalFile.transfer_failed_2(response, request)'
         request.setResponseCode(404)
         request.finish()
 
-    def transfer(self, request):
-        self.render(request)
+    def _fake_render(self, response, request):
+        #print '[debug]LocalFile._fake_render(response, request)'
+        self.restat(False)
+        for header, value in response.headers.getAllRawHeaders():
+            request.setHeader(header, value)
+
+        request.setResponseCode(http.OK)
+
+        #send response header
+        request.write('')
+
+        d = threads.deferToThread(self.download, request)
+        d.addCallback(self.download_finish, request)
 
     def get_xunlei_url(self,request):
         common.xunlei.add_task(request.uri)
@@ -60,30 +73,51 @@ class LocalFile(static.File):
         return request.uri
 
     def download(self, request):
-        if not request.uri in common.downloadlist:
+        #print '[debug]LocalFile.download(request)'
+        p = None
+        if not common.has_download(self.filepath):
             ret = 0
             cmd = 'aria2c -c -s10 -x5 -k 10M -d %s -o %s "%s"' % (common.destdir, getFileName(request.uri), request.uri)
             if common.XUNLEI_ENABLE:
                 cmd = 'aria2c -c -s10 -x5 -k 10M --header "Cookie:gdriveid=%s;" -d %s -o "%s" "%s"' % (common.xunlei.gdriveid, common.destdir, getFileName(request.uri), self.get_xunlei_url(request))
-            common.downloadlist.append(request.uri)
-            print '[debug]',cmd
-            subprocess.call(cmd,shell=True)
-            common.downloadlist.remove(request.uri)
-            if ret == 0:
-                #print 'download completed!'
-                self.transfer(request)
-                return
-            else:
-                #print 'download failed!'
-                pass
-        request.setResponseCode(404)
-        request.finish()
-
-    def pre_render(self, request):
-        if os.path.exists(self.filepath) and not os.path.exists(self.filepath + '.aria2'):
-            self.transfer(request)
+            #print '[debug]',cmd
+            p = subprocess.Popen(cmd,shell=True)
+            common.addDownloadList(self.filepath, p)
         else:
-            threads.deferToThread(self.download, request)
+            p = common.downloadlist[self.filepath]
+        
+        ret = p.wait()
+        common.delDownloadList(self.filepath)
+        return ret
+
+    def download_finish(self, result, request):
+        if result == 0 and os.path.exists(self.filepath) and not os.path.exists(self.filepath + '.aria2'):
+            try:
+                fileForReading = self.openForReading()
+            except IOError, e:
+                import errno
+                if e[0] == errno.EACCES:
+                    return resource.ForbiddenResource().render(request)
+                else:
+                    raise
+
+            producer = self.makeProducer(request, fileForReading)
+            producer.start()
+        else:
+            print 'download failed'
+            self.transfer_failed(None, request)
+    
+    def pre_render(self, request):
+        #print '[debug]LocalFile.pre_render(request)'
+        if os.path.exists(self.filepath) and not os.path.exists(self.filepath + '.aria2'):
+            #print 'File already downloaded, begin to transfer...'
+            self.render(request)
+        else:
+            agent = Agent(request.reactor)
+            d = agent.request('HEAD', request.uri, request.requestHeaders.copy(), None)
+            d.addCallback(self._fake_render, request)
+            d.addErrback(self.transfer_failed, request)
+        # and make sure the connection doesn't get closed
         return server.NOT_DONE_YET
 
 class TunnelProxyRequest (ProxyRequest):
@@ -110,11 +144,11 @@ class TunnelProxyRequest (ProxyRequest):
             print 'Psn.proxy Warning: Host psp2-e.np.dl.playstation.nethttp misformated, psn.proxy fixed it'
 
     def write(self, data):
-        if self.method.upper() == 'HEAD':
-            print 'debug TunnelProxyRequest.write',self.responseHeaders
+        #if self.method.upper() == 'HEAD':
+            #print 'debug TunnelProxyRequest.write',self.responseHeaders
         ProxyRequest.write(self,data)
         if self.method.upper() == 'HEAD' and self.isReplace() and self.responseHeaders.hasHeader('content-length'):
-            print self.responseHeaders.getRawHeaders('content-length')
+            #print self.responseHeaders.getRawHeaders('content-length')
             pkgsize = int(self.responseHeaders.getRawHeaders('content-length')[-1])
             if pkgsize < common.minsize:
                 if not self.uri in common.ignorelist:
@@ -140,7 +174,7 @@ class TunnelProxyRequest (ProxyRequest):
             else: 
                 ProxyRequest.process(self) 
                 #if the pkg is too smaller,there is no need to boost
- 
+
     def _process_connect(self): 
         try: 
             host, portStr = self.uri.split(':', 1) 
@@ -265,8 +299,6 @@ class TunnelProtocol (Protocol):
     def dataReceived(self, data): 
         self._peertransport.write(data) 
  
- 
- 
 class TunnelProtocolFactory (ClientFactory): 
     protocol = TunnelProtocol 
  
@@ -306,9 +338,9 @@ class Common:
 
         self.destdir = os.path.join(os.path.dirname(__file__), 'cache')
 
-        self.minsize = 1024 * 1024
+        self.minsize = self.CONFIG.getint('download', 'minsize')
 
-        self.downloadlist = []        
+        self.downloadlist = {}      
         self.ignorelist = []        
         
         self.xunlei = LiXianAPI()
@@ -339,7 +371,16 @@ class Common:
             info += 'Xunlei Level         : %s\n' % (xvi.get("level", "0"))
         info += '------------------------------------------------------\n'
         return info
+
+    def has_download(self, key):
+        return self.downloadlist.has_key(key)
         
+    def addDownloadList(self, key, value):
+        self.downloadlist[key] = value
+
+    def delDownloadList(self, key):
+        if self.downloadlist.has_key(key):
+            del self.downloadlist[key]
 
 common = None
 
